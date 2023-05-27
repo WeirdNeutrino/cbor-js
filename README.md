@@ -1,3 +1,4 @@
+WDNO FORKED VERSION
 cbor-js
 =======
 
