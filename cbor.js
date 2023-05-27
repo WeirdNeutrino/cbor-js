@@ -1,7 +1,7 @@
 /*
  * The MIT License (MIT)
  *
- * Copyright (c) 2014-2016 Patrick Gansterer <paroga@paroga.com>
+ * Copyright (c) 2014 Patrick Gansterer <paroga@paroga.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,9 +23,9 @@
  */
 
 (function(global, undefined) { "use strict";
-var POW_2_24 = 5.960464477539063e-8,
-    POW_2_32 = 4294967296,
-    POW_2_53 = 9007199254740992;
+var POW_2_24 = Math.pow(2, -24),
+    POW_2_32 = Math.pow(2, 32),
+    POW_2_53 = Math.pow(2, 53);
 
 function encode(value) {
   var data = new ArrayBuffer(256);
@@ -33,51 +33,51 @@ function encode(value) {
   var lastLength;
   var offset = 0;
 
-  function prepareWrite(length) {
+  function ensureSpace(length) {
     var newByteLength = data.byteLength;
     var requiredLength = offset + length;
     while (newByteLength < requiredLength)
-      newByteLength <<= 1;
+      newByteLength *= 2;
     if (newByteLength !== data.byteLength) {
       var oldDataView = dataView;
       data = new ArrayBuffer(newByteLength);
       dataView = new DataView(data);
       var uint32count = (offset + 3) >> 2;
       for (var i = 0; i < uint32count; ++i)
-        dataView.setUint32(i << 2, oldDataView.getUint32(i << 2));
+        dataView.setUint32(i * 4, oldDataView.getUint32(i * 4));
     }
 
     lastLength = length;
     return dataView;
   }
-  function commitWrite() {
+  function write() {
     offset += lastLength;
   }
   function writeFloat64(value) {
-    commitWrite(prepareWrite(8).setFloat64(offset, value));
+    write(ensureSpace(8).setFloat64(offset, value));
   }
   function writeUint8(value) {
-    commitWrite(prepareWrite(1).setUint8(offset, value));
+    write(ensureSpace(1).setUint8(offset, value));
   }
   function writeUint8Array(value) {
-    var dataView = prepareWrite(value.length);
+    var dataView = ensureSpace(value.length);
     for (var i = 0; i < value.length; ++i)
       dataView.setUint8(offset + i, value[i]);
-    commitWrite();
+    write();
   }
   function writeUint16(value) {
-    commitWrite(prepareWrite(2).setUint16(offset, value));
+    write(ensureSpace(2).setUint16(offset, value));
   }
   function writeUint32(value) {
-    commitWrite(prepareWrite(4).setUint32(offset, value));
+    write(ensureSpace(4).setUint32(offset, value));
   }
   function writeUint64(value) {
     var low = value % POW_2_32;
     var high = (value - low) / POW_2_32;
-    var dataView = prepareWrite(8);
+    var dataView = ensureSpace(8);
     dataView.setUint32(offset, high);
     dataView.setUint32(offset + 4, low);
-    commitWrite();
+    write();
   }
   function writeTypeAndLength(type, length) {
     if (length < 24) {
@@ -96,7 +96,7 @@ function encode(value) {
       writeUint64(length);
     }
   }
-
+  
   function encodeItem(value) {
     var i;
 
@@ -108,7 +108,7 @@ function encode(value) {
       return writeUint8(0xf6);
     if (value === undefined)
       return writeUint8(0xf7);
-
+  
     switch (typeof value) {
       case "number":
         if (Math.floor(value) === value) {
@@ -158,7 +158,26 @@ function encode(value) {
         } else if (value instanceof Uint8Array) {
           writeTypeAndLength(2, value.length);
           writeUint8Array(value);
-        } else {
+        } 
+        else if (value instanceof Map){
+          if (value.has('TAG_TYPE')){
+            var tag = value.get('TAG_TYPE')
+            var val = value.get('element')
+            console.log("REQUEST INNER CBOR TAG")
+            writeUint8(6 << 5 | 24);
+            writeUint8(tag);
+            encodeItem(val)
+          }
+          else{
+            length = value.size;
+            writeTypeAndLength(5, length);
+            for (const [key, val] of value) {
+              encodeItem(key);
+              encodeItem(val);
+            }
+          }
+        }
+        else{
           var keys = Object.keys(value);
           length = keys.length;
           writeTypeAndLength(5, length);
@@ -170,12 +189,12 @@ function encode(value) {
         }
     }
   }
-
+  
   encodeItem(value);
 
   if ("slice" in data)
     return data.slice(0, offset);
-
+  
   var ret = new ArrayBuffer(offset);
   var retView = new DataView(ret);
   for (var i = 0; i < offset; ++i)
@@ -186,18 +205,18 @@ function encode(value) {
 function decode(data, tagger, simpleValue) {
   var dataView = new DataView(data);
   var offset = 0;
-
+  
   if (typeof tagger !== "function")
     tagger = function(value) { return value; };
   if (typeof simpleValue !== "function")
     simpleValue = function() { return undefined; };
 
-  function commitRead(length, value) {
+  function read(value, length) {
     offset += length;
     return value;
   }
   function readArrayBuffer(length) {
-    return commitRead(length, new Uint8Array(data, offset, length));
+    return read(new Uint8Array(data, offset, length), length);
   }
   function readFloat16() {
     var tempArrayBuffer = new ArrayBuffer(4);
@@ -207,31 +226,31 @@ function decode(data, tagger, simpleValue) {
     var sign = value & 0x8000;
     var exponent = value & 0x7c00;
     var fraction = value & 0x03ff;
-
+    
     if (exponent === 0x7c00)
       exponent = 0xff << 10;
     else if (exponent !== 0)
       exponent += (127 - 15) << 10;
     else if (fraction !== 0)
-      return (sign ? -1 : 1) * fraction * POW_2_24;
-
+      return fraction * POW_2_24;
+    
     tempDataView.setUint32(0, sign << 16 | exponent << 13 | fraction << 13);
     return tempDataView.getFloat32(0);
   }
   function readFloat32() {
-    return commitRead(4, dataView.getFloat32(offset));
+    return read(dataView.getFloat32(offset), 4);
   }
   function readFloat64() {
-    return commitRead(8, dataView.getFloat64(offset));
+    return read(dataView.getFloat64(offset), 8);
   }
   function readUint8() {
-    return commitRead(1, dataView.getUint8(offset));
+    return read(dataView.getUint8(offset), 1);
   }
   function readUint16() {
-    return commitRead(2, dataView.getUint16(offset));
+    return read(dataView.getUint16(offset), 2);
   }
   function readUint32() {
-    return commitRead(4, dataView.getUint32(offset));
+    return read(dataView.getUint32(offset), 4);
   }
   function readUint64() {
     return readUint32() * POW_2_32 + readUint32();
@@ -267,7 +286,7 @@ function decode(data, tagger, simpleValue) {
     return length;
   }
 
-  function appendUtf16Data(utf16data, length) {
+  function appendUtf16data(utf16data, length) {
     for (var i = 0; i < length; ++i) {
       var value = readUint8();
       if (value & 0x80) {
@@ -347,9 +366,9 @@ function decode(data, tagger, simpleValue) {
         var utf16data = [];
         if (length < 0) {
           while ((length = readIndefiniteStringLength(majorType)) >= 0)
-            appendUtf16Data(utf16data, length);
+            appendUtf16data(utf16data, length);
         } else
-          appendUtf16Data(utf16data, length);
+          appendUtf16data(utf16data, length);
         return String.fromCharCode.apply(null, utf16data);
       case 4:
         var retArray;
@@ -394,11 +413,11 @@ function decode(data, tagger, simpleValue) {
   return ret;
 }
 
-var obj = { encode: encode, decode: decode };
+var obj = { encode: encode, decode: decode};
 
 if (typeof define === "function" && define.amd)
   define("cbor/cbor", obj);
-else if (typeof module !== "undefined" && module.exports)
+else if (typeof module !== 'undefined' && module.exports)
   module.exports = obj;
 else if (!global.CBOR)
   global.CBOR = obj;
