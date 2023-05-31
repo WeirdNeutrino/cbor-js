@@ -163,9 +163,7 @@ function encode(value) {
           if (value.has('TAG_TYPE')){
             var tag = value.get('TAG_TYPE')
             var val = value.get('element')
-            console.log("REQUEST INNER CBOR TAG")
-            writeUint8(6 << 5 | 24);
-            writeUint8(tag);
+            writeTypeAndLength(6,tag)
             encodeItem(val)
           }
           else{
